@@ -48,7 +48,8 @@ Coloca todos los archivos en la misma carpeta del proyecto:
 
 ```text
 proyecto/
-├── main_usb_camera.py   # Aplicación principal 
+├── main_usb_camera.py   # Aplicación principal
+├── mindvision_video.py  # Captura MindVision mediante MVSDK
 ├── requirements.txt     # Dependencias de Python
 ├── README.md            # Documentación
 ├── bestE.pt             # Pesos YOLO - Escarmenado (detección)
@@ -65,7 +66,26 @@ proyecto/
 
 ## Instalación y ejecución
 
-### Opción 1: Con `uv` (recomendado)
+### Cámara MindVision en el Jetson
+
+La aplicación usa MVSDK de forma predeterminada. El SDK nativo (`libMVSDK.so` en Linux)
+debe estar instalado y su módulo Python `mvsdk.py` debe estar disponible en la carpeta
+del proyecto o en `PYTHONPATH`. En este equipo, el enlace de la carpeta del proyecto
+apunta al módulo usado por la aplicación anterior.
+
+Ejecuta la aplicación con el entorno virtual configurado en el Jetson:
+
+```bash
+.venv/bin/python main_usb_camera.py
+```
+
+Para una cámara UVC convencional, selecciona el backend de OpenCV:
+
+```bash
+ALPACA_CAMERA_BACKEND=uvc .venv/bin/python main_usb_camera.py
+```
+
+### Opción 1: Con `uv`
 
 `main_usb_camera.py` ya declara sus dependencias en el bloque `# /// script` al inicio del archivo. Solo ejecuta:
 

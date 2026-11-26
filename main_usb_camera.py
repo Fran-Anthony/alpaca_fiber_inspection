@@ -35,7 +35,6 @@ except Exception as e:
 YOLO = None
 YOLO_IMPORT_ERROR = None
 torch = None
-mvsdk = None
 
 if platform.system() == "Windows":
     try:
@@ -1506,13 +1505,9 @@ class MainWindow(QMainWindow):
 
     def apply_once_wb(self):
         try:
-            if (
-                self.cap is not None
-                and getattr(self.cap, "hCamera", None) is not None
-                and mvsdk is not None
-                and hasattr(mvsdk, "CameraSetOnceWB")
-            ):
-                mvsdk.CameraSetOnceWB(self.cap.hCamera)
+            apply_wb = getattr(self.cap, "apply_once_wb", None)
+            if apply_wb is not None and self.cap.isOpened():
+                apply_wb()
                 self.log("Balance de blancos automático ejecutado.")
             else:
                 self.log("La cámara no está abierta o el SDK no soporta CameraSetOnceWB.")
@@ -1777,6 +1772,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             if self.cap:
                 self.cap.release()
+                self.cap = None
             self.detect_button.setText("Iniciar detección")
             self._set_running_visual_state(False)
             self.last_rendered_pixmap = None
@@ -1796,28 +1792,30 @@ class MainWindow(QMainWindow):
             self.btn_clear_test_image.setEnabled(False)
 
         try:
-            self.cap = USBCamera(
-                device="/dev/video0",
-                width=800,
-                height=600,
-                fps=30,
-                fourcc="YUYV"
-            )
+            if os.environ.get("ALPACA_CAMERA_BACKEND", "mindvision").lower() == "uvc":
+                self.cap = USBCamera()
+            else:
+                from mindvision_video import MindVisionCamera
+
+                self.cap = MindVisionCamera(rgb_gain=(142, 71, 120))
             self.cap.open()
         except Exception as e:
+            if self.cap is not None:
+                self.cap.release()
+            self.cap = None
+            print(f"Error al abrir la cámara: {e}")
             QMessageBox.critical(
                 self,
-                "Error de Cámara USB",
-                f"No se puede abrir la cámara USB.\n{e}"
+                "Error de cámara",
+                f"No se pudo abrir la cámara.\n{e}"
             )
-            self.cap = None
             self._set_running_visual_state(False)
             return
 
         self.detect_button.setText("Detener detección")
         self._set_running_visual_state(True)
         self.timer.start(33)
-        print("Cámara USB abierta. Iniciando detección...")
+        print("Iniciando detección...")
 
     def update_status_label(self, count):
         """
