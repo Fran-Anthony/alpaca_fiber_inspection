@@ -12,7 +12,7 @@ if platform.system() == "Windows":
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QImage, QPixmap, QFont, QKeySequence
-from PyQt5.QtCore import QTimer, Qt, QSize, pyqtSignal
+from PyQt5.QtCore import QSignalBlocker, QTimer, Qt, QSize, pyqtSignal
 
 from .inspection_inference import PROCESS_MODELS, YOLO, YOLO_IMPORT_ERROR, draw_custom_predictions, torch
 from .camera_control import create_camera
@@ -82,7 +82,9 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.current_stage_key = None
         self.loaded_model_key = None
         self.infer_conf = 0.50
-        self.infer_imgsz = 416
+        self.infer_imgsz_by_group = {"default": 416, "hilado": 1200}
+        self.infer_imgsz_group = "default"
+        self.infer_imgsz = self.infer_imgsz_by_group[self.infer_imgsz_group]
         self.last_tiled_detections = []
         self.tiled_executor = ThreadPoolExecutor(max_workers=1)
         self.tiled_job = None
@@ -391,7 +393,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         imgsz_lbl = QLabel("Imgsz")
         imgsz_lbl.setObjectName("mutedLabel")
         self.combo_imgsz = QComboBox()
-        for sz in [320, 416, 512, 640, 800, 960, 1024, 1280, 1600]:
+        for sz in [320, 416, 512, 640, 800, 960, 1024, 1200, 1280, 1600]:
             self.combo_imgsz.addItem(str(sz), sz)
         self.combo_imgsz.setCurrentText(str(self.infer_imgsz))
         self.combo_imgsz.setMinimumHeight(34)
@@ -691,6 +693,10 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             return
 
         self.current_stage_key = stage_key
+        self.infer_imgsz_group = "hilado" if stage_key == "hilado" else "default"
+        self.infer_imgsz = self.infer_imgsz_by_group[self.infer_imgsz_group]
+        with QSignalBlocker(self.combo_imgsz):
+            self.combo_imgsz.setCurrentText(str(self.infer_imgsz))
         if self.timer.isActive():
             self.last_rendered_pixmap = None
         cardado = stage_key in ("cardado", "cardado_impurezas")
@@ -787,6 +793,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         """Actualiza los controles y vuelve a procesar la imagen de prueba."""
         self.infer_conf = float(self.spin_conf.value())
         self.infer_imgsz = int(self.combo_imgsz.currentData())
+        self.infer_imgsz_by_group[self.infer_imgsz_group] = self.infer_imgsz
 
         if not self.timer.isActive() and self.test_image_bgr is None:
             self._update_impurity_legend(audit=self.tiled_view.currentIndex() == 1)
