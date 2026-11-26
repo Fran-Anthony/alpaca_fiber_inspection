@@ -1,14 +1,14 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.8"
 # dependencies = [
-#     "matplotlib>=3.11.2",
-#     "numpy>=2.5.5",
-#     "opencv-python>=5.1.0.95",
-#     "pyqt5>=5.15.11",
+#     "ultralytics>=8.4.138",
+#     "torch>=2.0.0",
+#     "torchvision>=0.15.1",
+#     "opencv-python>=5.0.0.93",
+#     "numpy>=1.24.4",
+#     "PyQt5>=5.14.1",
 #     "pyserial>=3.5",
-#     "torch>=2.15.0",
-#     "torchvision>=0.29.2",
-#     "ultralytics>=8.4.218",
+#     "Pillow>=9.1",
 # ]
 # ///
 from alpaca_inspection.inspection_gui import MainWindow, main

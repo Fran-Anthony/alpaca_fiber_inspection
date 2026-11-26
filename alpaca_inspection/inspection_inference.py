@@ -24,7 +24,7 @@ PROCESS_MODELS = {
         "label": "Cardado",
         "filename": "bestC.pt",
         "task": "segment",
-        "desc": "Segmentación (Máscara + BBox)",
+        "desc": "Segmentación y homogeneidad de la cinta",
         "class_names_override": {
             0: "cinta",
         },

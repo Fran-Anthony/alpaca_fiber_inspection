@@ -18,6 +18,7 @@ from .inspection_inference import PROCESS_MODELS, YOLO, YOLO_IMPORT_ERROR, draw_
 from .camera_control import create_camera
 from .color_calibration import ColorCalibration, DEFAULT_COLOR_PARAMS
 from .motor_control import MotorControls
+from .homogeneity import ServicioHomogeneidad
 from .tiler_detector import AUDIT_COLORS, BOX_COLORS, TiledImpurityDetector, render_detections
 from .paths import ASSETS_DIR, MODELS_DIR, PROJECT_DIR
 
@@ -27,6 +28,7 @@ import numpy as np
 
 CLEAN_LIMIT = 6
 DIRTY_LIMIT = 24
+STATUS_COLORS = {"clean": "#3A7D54", "warning": "#B67923", "danger": "#B03A38", "idle": "#777777"}
 GAUGE_MAX = 72
 
 
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.color_fix_enabled = bool(self.params.get("color_fix_enabled", True))
 
         # --- Estado de Modelo (carga bajo demanda) ---
+        self.homogeneity_service = ServicioHomogeneidad()
         self.model = None
         self.current_stage_key = None
         self.loaded_model_key = None
@@ -335,7 +338,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.cardado_group = QButtonGroup(self)
         self.cardado_buttons = {}
         for key, label, accessible_name in (
-            ("cardado", "Segmentar cinta", "Segmentación de cinta"),
+            ("cardado", "Homogeneidad", "Segmentación y homogeneidad de la cinta"),
             ("cardado_impurezas", "Impurezas", "Detección de impurezas"),
         ):
             button = QPushButton(label)
@@ -362,6 +365,10 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.model_info_label = QLabel()
         self.model_info_label.setWordWrap(True)
         settings_layout.addWidget(self.model_info_label)
+        self.homogeneity_details = QLabel()
+        self.homogeneity_details.setWordWrap(True)
+        self.homogeneity_details.hide()
+        settings_layout.addWidget(self.homogeneity_details)
 
         # --- Parámetros graduables de inferencia (compartidos) ---
         self.standard_params = QWidget()
@@ -698,7 +705,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.tiled_params.setVisible(tiled)
         self.impurity_legend.setVisible(tiled)
         self._update_impurity_legend(audit=self.tiled_view.currentIndex() == 1)
-        self.gauge.setVisible(stage_key != "cardado")
+        self.homogeneity_details.setVisible(stage_key == "cardado")
         self._reset_inspection_status()
         self._reset_tiled_summary()
         if not load_now or (not self.timer.isActive() and self.test_image_bgr is None):
@@ -890,8 +897,13 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             )
 
             detection_count = len(results[0].boxes) if results[0].boxes is not None else 0
-            self.update_status_label(detection_count)
-            self.update_gauge_chart(detection_count)
+            if self.current_stage_key == "cardado":
+                mask = self.homogeneity_service.extraer_mascara_yolo(results[0], frame.shape)
+                measurement = self.homogeneity_service.analizar_con_mascara(frame, mask)
+                self._show_homogeneity(measurement)
+            else:
+                self.update_status_label(detection_count)
+                self.update_gauge_chart(detection_count)
 
             stage_cfg = self._active_stage_config()
             class_names = self._get_stage_class_names(stage_cfg)
@@ -1292,13 +1304,14 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             status = "danger"
             text = "FIBRA SUCIA"
 
-        if self.current_stage_key == "cardado":
-            text, status = f"CINTAS: {count}", "idle"
         self._set_status(text, status)
 
     def _reset_inspection_status(self):
-        self._set_status("ESPERANDO", "idle")
-        self.update_gauge_chart(0)
+        if self.current_stage_key == "cardado":
+            self._show_homogeneity(None, waiting=True)
+        else:
+            self._set_status("ESPERANDO", "idle")
+            self.update_gauge_chart(0)
 
     def _set_status(self, text, status):
         self.status_label.setText(text)
@@ -1306,13 +1319,40 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
+    def _show_homogeneity(self, result, *, waiting=False):
+        if result is None:
+            self._set_status("ESPERANDO" if waiting else "SIN CINTA DETECTADA", "idle")
+            self._update_gauge(0, 100, "Homogeneidad: —", "idle")
+            self.homogeneity_details.clear()
+            return
+
+        status = {
+            "HOMOGÉNEO": "clean",
+            "MEDIA HOMOGENEIDAD": "warning",
+            "BAJA HOMOGENEIDAD": "danger",
+        }[result.decision]
+        self._set_status(result.decision, status)
+        label = "Homogeneidad"
+        # La barra de referencia conserva una marca visible si hay votos bajos.
+        self._update_gauge(round(max(result.puntaje, 8 if result.votos_baja else 0)), 100, label, status)
+        self.homogeneity_details.setText(
+            f"Votos: {result.votos_alta} alta · {result.votos_media} media · {result.votos_baja} baja\n"
+            f"Intensidad: CV {result.cv1:.3f} · entropía {result.entropia1:.2f}\n"
+            f"Perfil: CV {result.cv2:.3f} · GLCM: {result.homogeneidad3:.3f}\n"
+            f"Bloques 4 × 4: CV {result.cv4:.3f}"
+        )
+
     def update_gauge_chart(self, count):
-        self.gauge.setValue(min(count, GAUGE_MAX))
-        self.gauge.setFormat(f"{count} / {GAUGE_MAX}")
-        color = "#3A7D54" if count < CLEAN_LIMIT else "#B67923" if count <= DIRTY_LIMIT else "#B03A38"
+        status = "clean" if count < CLEAN_LIMIT else "warning" if count <= DIRTY_LIMIT else "danger"
+        self._update_gauge(count, GAUGE_MAX, f"{count} / {GAUGE_MAX}", status)
+
+    def _update_gauge(self, value, maximum, text, status):
+        self.gauge.setMaximum(maximum)
+        self.gauge.setValue(min(value, maximum))
+        self.gauge.setFormat(text)
         self.gauge.setStyleSheet(
             "QProgressBar { border: 1px solid #CCC; background: #F4F4F4; color: #181818; }"
-            f"QProgressBar::chunk {{ background: {color}; }}"
+            f"QProgressBar::chunk {{ background: {STATUS_COLORS[status]}; }}"
         )
 
     def update_frame(self):

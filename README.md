@@ -10,7 +10,7 @@ Aplicación de escritorio en Python (**PyQt5 + OpenCV + Ultralytics YOLO + PySer
 | Etapa | Pesos | Visualización |
 | :--- | :--- | :--- |
 | Escarmenado y Lavado | `bestS.pt` (`yolo11n_exp2_aug`) | Cajas de impurezas con tiling |
-| Cardado · Segmentación de cinta | `bestC.pt` | Máscaras y cajas de la cinta |
+| Cardado · Homogeneidad | `bestC.pt` | Máscara de la cinta, diagnóstico y puntaje de homogeneidad |
 | Cardado · Detección de impurezas | `bestS.pt` | Cajas en las filas centrales |
 | Hilado | `bestH.pt` | Máscaras y cajas |
 
@@ -20,10 +20,21 @@ La aplicación carga el modelo al iniciar la detección o al probar una imagen. 
 
 - **Escarmenado y Lavado** usan recortes RAW de 640 × 640 px, con 128 px de solape nominal. Un fotograma de 2448 × 2048 genera 20 tiles. Ambos umbrales empiezan en `0.10` y se pueden ajustar por clase. **Cajas** muestra partícula en rojo y paja en azul. El panel derecho incluye una leyenda que cambia con la vista. **Auditoría** muestra la cuadrícula, las confianzas y las fusiones.
 - **Cardado · Detección de impurezas** usa el mismo modelo que Escarmenado y Lavado y omite la primera y la última fila de tiles. En una captura de 2448 × 2048 se analizan 10 tiles.
-- **Segmentación de cinta e Hilado** usan la imagen completa con controles de confianza y tamaño de entrada.
+- **Homogeneidad de Cardado e Hilado** usan la imagen completa con controles de confianza y tamaño de entrada.
 - Para usar otro checkpoint compatible o un motor TensorRT de 640 × 640, define `ALPACA_TILING_WEIGHTS` con la ruta del archivo.
 
-### 3. Diagnóstico de calidad y registro de eventos (OJO)
+### 3. Homogeneidad de la cinta cardada
+
+En **Cardado → Homogeneidad**, la aplicación segmenta la cinta con `bestC.pt` y evalúa la máscara a 640 × 640 con los cuatro métodos de la referencia:
+
+- Variación de intensidad y entropía dentro de la máscara.
+- Variación del ancho de la cinta a lo largo del perfil.
+- Homogeneidad de textura con una matriz de coocurrencia de niveles de gris (GLCM).
+- Variación de la intensidad media entre bloques de una cuadrícula 4 × 4.
+
+Con dos o más votos bajos, el resultado es **Baja homogeneidad**. Con al menos dos votos altos y cero bajos, es **Homogéneo**. El resto se clasifica como **Media homogeneidad**. El porcentaje asigna 25 puntos por voto alto y 12,5 por voto medio. Abre **Ajustes de detección** para ver los votos y los valores de cada método. Si el modelo no encuentra una máscara válida, la interfaz muestra **Sin cinta detectada**.
+
+### 4. Diagnóstico de impurezas y registro de eventos
 - **Semáforo de estado de la fibra**:
   - `0` a `5` detecciones: **FIBRA LIMPIA**
   - `6` a `24` detecciones: **FIBRA CON IMPUREZAS**
@@ -33,7 +44,7 @@ La aplicación carga el modelo al iniciar la detección o al probar una imagen. 
 
 
 
-### 4. Compatibilidad multiplataforma y utilidades conservadas
+### 5. Compatibilidad multiplataforma y utilidades conservadas
 - Orden de importaciones adaptado por sistema operativo:
   - **Windows**: importa `torch` y `ultralytics` antes de `PyQt5` y `cv2` para reducir conflictos de DLL (`c10.dll`).
   - **Linux / Jetson**: importa `PyQt5` antes de `cv2` y `torch` para evitar conflictos TLS/OpenGL.
@@ -47,10 +58,11 @@ La aplicación carga el modelo al iniciar la detección o al probar una imagen. 
 proyecto/
 ├── main_usb_camera.py     # Inicio de la aplicación Qt
 ├── infer_tiling.py        # Inicio de la CLI
-├── alpaca_inspection/     # Interfaz, cámara, motor, calibración e inferencia
+├── alpaca_inspection/     # Interfaz, cámara, motor, calibración e inferencia por etapa
 ├── models/               # Pesos YOLO de todas las etapas y bestE.pt de referencia
 ├── assets/               # Logos de la interfaz
 ├── reference/
+│   ├── cardado/          # main_met_homogeneidad.py, implementación de referencia
 │   ├── camera/           # Aplicaciones anteriores y pruebas de MindVision
 │   └── tiling/           # Agents_tiling.md y herramientas de dataset Roboflow
 ├── runtime/              # Datos de cámara y calibración locales, ignorados por Git
@@ -76,7 +88,7 @@ debe estar instalado y su módulo Python `mvsdk.py` debe estar disponible en
 `PYTHONPATH` o en `alpaca_inspection/mvsdk.py`. En este equipo el enlace apunta
 al módulo usado por la aplicación anterior.
 
-Ejecuta la aplicación con el entorno virtual configurado en el Jetson:
+Usa el entorno virtual del Jetson con la compilación de PyTorch para NVIDIA y la versión correspondiente de torchvision. El cálculo de homogeneidad usa OpenCV y NumPy. Ejecuta la aplicación con este entorno:
 
 ```bash
 .venv/bin/python main_usb_camera.py
@@ -113,7 +125,7 @@ python main_usb_camera.py
 
 ## Guía rápida de uso
 
-1. **Seleccionar etapa del proceso**: elige **Escarmenado y Lavado**, **Cardado** o **Hilado**. En Cardado elige **Segmentación de cinta** o **Detección de impurezas**.
+1. **Seleccionar etapa del proceso**: elige **Escarmenado y Lavado**, **Cardado** o **Hilado**. En Cardado elige **Homogeneidad** o **Impurezas**.
 2. **Ajustar parámetros**: abre **Ajustes de detección** para cambiar la confianza y la vista.
 3. **Inspección en tiempo real**:
    - Pulsa **Iniciar detección** para abrir la cámara USB y comenzar la inferencia.
