@@ -14,14 +14,7 @@ import numpy as np
 
 PROCESS_MODELS = {
     "escarmenado": {
-        "label": "Escarmenado",
-        "filename": "bestS.pt",
-        "task": "detect",
-        "desc": "Tiling 640 × 640",
-        "tiled": True,
-    },
-    "lavado": {
-        "label": "Lavado",
+        "label": "Escarmenado y Lavado",
         "filename": "bestS.pt",
         "task": "detect",
         "desc": "Tiling 640 × 640",
@@ -38,6 +31,14 @@ PROCESS_MODELS = {
         "colors": {
             0: (155, 115, 35),   # Azul petróleo (clase única: cinta)
         }
+    },
+    "cardado_impurezas": {
+        "label": "Impurezas en Cardado",
+        "filename": "bestS.pt",
+        "task": "detect",
+        "desc": "Tiling en filas centrales",
+        "tiled": True,
+        "skip_outer_rows": True,
     },
     "hilado": {
         "label": "Hilado",

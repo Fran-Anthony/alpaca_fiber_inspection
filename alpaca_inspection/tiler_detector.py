@@ -19,12 +19,16 @@ DEFAULT_WEIGHTS = MODELS_DIR / "bestS.pt"
 
 
 @lru_cache(maxsize=32)
-def tile_grid(height, width, roi=None):
+def tile_grid(height, width, roi=None, skip_outer_rows=False):
     x1, y1, x2, y2 = roi if roi is not None else (0, 0, width, height)
     if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
         raise ValueError("La ROI debe estar dentro de la imagen.")
     xs = positions(x2 - x1, TILE_SIZE, OVERLAP)
     ys = positions(y2 - y1, TILE_SIZE, OVERLAP)
+    if skip_outer_rows:
+        ys = ys[1:-1]
+        if not ys:
+            raise ValueError("La imagen necesita al menos tres filas de tiles para analizar la cinta.")
     return tuple((x1 + x, y1 + y) for y in ys for x in xs)
 
 
@@ -81,12 +85,12 @@ class TiledImpurityDetector:
 
     def predict_frame(self, frame, *, conf_particle=0.10, conf_straw=0.10, roi=None,
                       dedup="cross_tile_merge", merge="wbf", class_agnostic=False,
-                      tile_iou=0.45, color_order="BGR"):
+                      tile_iou=0.45, color_order="BGR", skip_outer_rows=False):
         """Devuelve detecciones globales y tiempos en milisegundos, con los orígenes de tiles."""
         if frame is None or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
             raise ValueError("Se esperaba una imagen de tres canales uint8.")
         height, width = frame.shape[:2]
-        coords = tile_grid(height, width, tuple(roi) if roi is not None else None)
+        coords = tile_grid(height, width, tuple(roi) if roi is not None else None, skip_outer_rows)
         thresholds = {0: conf_particle, 1: conf_straw}
         if any(not 0 < threshold <= 1 for threshold in thresholds.values()):
             raise ValueError("Los umbrales de confianza deben estar en (0, 1].")

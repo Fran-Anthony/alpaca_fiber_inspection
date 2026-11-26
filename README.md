@@ -1,6 +1,6 @@
 # Sistema de Inspección de Fibra de Alpaca
 
-Aplicación de escritorio en Python (**PyQt5 + OpenCV + Ultralytics YOLO + Matplotlib + PySerial**) diseñada con una interfaz sobria de consola industrial para la inspección óptica de fibra de alpaca en tiempo real y el control simultáneo de un motor mediante **Arduino / L298N**.
+Aplicación de escritorio en Python (**PyQt5 + OpenCV + Ultralytics YOLO + PySerial**) diseñada con una interfaz sobria de consola industrial para la inspección óptica de fibra de alpaca en tiempo real y el control simultáneo de un motor mediante **Arduino / L298N**.
 
 ---
 
@@ -10,23 +10,25 @@ Aplicación de escritorio en Python (**PyQt5 + OpenCV + Ultralytics YOLO + Matpl
 | Etapa | Pesos | Visualización |
 | :--- | :--- | :--- |
 | Escarmenado y Lavado | `bestS.pt` (`yolo11n_exp2_aug`) | Cajas de impurezas con tiling |
-| Cardado | `bestC.pt` | Máscaras y cajas |
+| Cardado · Segmentación de cinta | `bestC.pt` | Máscaras y cajas de la cinta |
+| Cardado · Detección de impurezas | `bestS.pt` | Cajas en las filas centrales |
 | Hilado | `bestH.pt` | Máscaras y cajas |
 
-La aplicación carga el modelo al usar cada etapa. Escarmenado y Lavado comparten la misma instancia.
+La aplicación carga el modelo al iniciar la detección o al probar una imagen. Escarmenado y Lavado comparten un botón en la fila de etapas.
 
 ### 2. Parámetros de inferencia
 
-- **Escarmenado y Lavado** usan recortes RAW de 640 × 640 px, con 128 px de solape nominal. Un fotograma de 2448 × 2048 genera 20 tiles. Ambos umbrales empiezan en `0.10` y se pueden ajustar por clase. **Cajas** muestra partícula en rojo y paja en azul. **Auditoría** muestra la cuadrícula, las confianzas y las fusiones.
-- **Cardado e Hilado** usan la imagen completa con controles de confianza y tamaño de entrada.
+- **Escarmenado y Lavado** usan recortes RAW de 640 × 640 px, con 128 px de solape nominal. Un fotograma de 2448 × 2048 genera 20 tiles. Ambos umbrales empiezan en `0.10` y se pueden ajustar por clase. **Cajas** muestra partícula en rojo y paja en azul. El panel derecho incluye una leyenda que cambia con la vista. **Auditoría** muestra la cuadrícula, las confianzas y las fusiones.
+- **Cardado · Detección de impurezas** usa el mismo modelo que Escarmenado y Lavado y omite la primera y la última fila de tiles. En una captura de 2448 × 2048 se analizan 10 tiles.
+- **Segmentación de cinta e Hilado** usan la imagen completa con controles de confianza y tamaño de entrada.
 - Para usar otro checkpoint compatible o un motor TensorRT de 640 × 640, define `ALPACA_TILING_WEIGHTS` con la ruta del archivo.
 
 ### 3. Diagnóstico de calidad y registro de eventos (OJO)
 - **Semáforo de estado de la fibra**:
-  - `0` a `4` detecciones: **FIBRA LIMPIA**
-  - `5` a `20` detecciones: **FIBRA CON IMPUREZAS**
-  - Más de `20` detecciones: **FIBRA SUCIA**
-- **Medidor horizontal (Gauge)**: escala visual de `0` a `60` con lectura numérica integrada.
+  - `0` a `5` detecciones: **FIBRA LIMPIA**
+  - `6` a `24` detecciones: **FIBRA CON IMPUREZAS**
+  - Más de `24` detecciones: **FIBRA SUCIA**
+- **Medidor horizontal (Gauge)**: escala visual de `0` a `72` con lectura numérica integrada.
 - **Consola integrada (`StreamToLogger`)**: redirige `stdout` y `stderr` al panel **Registro de eventos**, mostrando tiempos de preprocesamiento, inferencia y postprocesamiento por frame.
 
 
@@ -111,8 +113,8 @@ python main_usb_camera.py
 
 ## Guía rápida de uso
 
-1. **Seleccionar etapa del proceso**: elige **Escarmenado**, **Lavado**, **Cardado** o **Hilado** en el panel derecho.
-2. **Ajustar parámetros**: ajusta los umbrales de confianza y los controles disponibles para la etapa.
+1. **Seleccionar etapa del proceso**: elige **Escarmenado y Lavado**, **Cardado** o **Hilado**. En Cardado elige **Segmentación de cinta** o **Detección de impurezas**.
+2. **Ajustar parámetros**: abre **Ajustes de detección** para cambiar la confianza y la vista.
 3. **Inspección en tiempo real**:
    - Pulsa **Iniciar detección** para abrir la cámara USB y comenzar la inferencia.
    - Pulsa **Detener detección** para liberar la cámara.

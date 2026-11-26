@@ -18,14 +18,16 @@ from .inspection_inference import PROCESS_MODELS, YOLO, YOLO_IMPORT_ERROR, draw_
 from .camera_control import create_camera
 from .color_calibration import ColorCalibration, DEFAULT_COLOR_PARAMS
 from .motor_control import MotorControls
-from .tiler_detector import TiledImpurityDetector, render_detections
+from .tiler_detector import AUDIT_COLORS, BOX_COLORS, TiledImpurityDetector, render_detections
 from .paths import ASSETS_DIR, MODELS_DIR, PROJECT_DIR
 
 import cv2
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.colors as mcolors
+
+
+CLEAN_LIMIT = 6
+DIRTY_LIMIT = 24
+GAUGE_MAX = 72
 
 
 class StreamToLogger(io.TextIOBase):
@@ -208,12 +210,6 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             self._apply_responsive_layout(1280, 720)
             self.show()
 
-    def _make_divider(self):
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setObjectName("divider")
-        return line
-
     def _load_logo_pixmap(self, filename):
         for path in (str(ASSETS_DIR / filename), filename):
             if os.path.exists(path):
@@ -242,18 +238,16 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
 
         self.logo_left = QLabel()
         self.logo_left.setObjectName("logoBox")
-        if self.logo_left_pixmap is None:
-            self.logo_left.setText("Logo Izquierdo")
+        self.logo_left.setVisible(self.logo_left_pixmap is not None)
 
-        self.title_label = QLabel("Sistema de Inspección de Fibra de Alpaca")
+        self.title_label = QLabel("Inspección de fibra")
         self.title_label.setObjectName("titleLabel")
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setWordWrap(True)
 
         self.logo_right = QLabel()
         self.logo_right.setObjectName("logoBox")
-        if self.logo_right_pixmap is None:
-            self.logo_right.setText("Logo Derecho")
+        self.logo_right.setVisible(self.logo_right_pixmap is not None)
 
         # Botón de pantalla completa para pantallas táctiles/empotradas sin teclado
         self.toggle_fullscreen_btn = QPushButton("⛶")
@@ -314,29 +308,60 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.sidebar_layout.setContentsMargins(14, 14, 14, 14)
         self.sidebar_layout.setSpacing(10)
 
-        # --- Panel de Selección de Etapa / Modelo ---
-        model_title = QLabel("Etapa del proceso")
-        model_title.setObjectName("sectionLabel")
-        self.sidebar_layout.addWidget(model_title)
-
         stage_row = QHBoxLayout()
-        stage_row.setSpacing(5)
+        stage_row.setSpacing(4)
+        self.stage_group = QButtonGroup(self)
         self.stage_buttons = {}
-        for key, cfg in PROCESS_MODELS.items():
-            btn = QPushButton(cfg["label"])
-            btn.setCheckable(True)
-            btn.setObjectName("stageBtn")
-            btn.setMinimumHeight(36)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda checked, k=key: self.select_process_stage(k, load_now=True))
-            self.stage_buttons[key] = btn
-            stage_row.addWidget(btn)
+        for key, label in (
+            ("escarmenado", "Escarmenado\ny Lavado"),
+            ("cardado", "Cardado"),
+            ("hilado", "Hilado"),
+        ):
+            button = QPushButton(label)
+            button.setAccessibleName(PROCESS_MODELS[key]["label"])
+            button.setObjectName("modeButton")
+            button.setCheckable(True)
+            button.setMinimumHeight(42)
+            button.clicked.connect(lambda checked, stage=key: self._select_stage_button(stage))
+            self.stage_group.addButton(button)
+            self.stage_buttons[key] = button
+            stage_row.addWidget(button, 2 if key == "escarmenado" else 1)
         self.sidebar_layout.addLayout(stage_row)
 
-        self.model_info_label = QLabel("Modelo: sin cargar")
-        self.model_info_label.setObjectName("monoMuted")
+        self.cardado_modes = QWidget()
+        cardado_row = QHBoxLayout(self.cardado_modes)
+        cardado_row.setContentsMargins(0, 0, 0, 0)
+        cardado_row.setSpacing(4)
+        self.cardado_group = QButtonGroup(self)
+        self.cardado_buttons = {}
+        for key, label, accessible_name in (
+            ("cardado", "Segmentar cinta", "Segmentación de cinta"),
+            ("cardado_impurezas", "Impurezas", "Detección de impurezas"),
+        ):
+            button = QPushButton(label)
+            button.setAccessibleName(accessible_name)
+            button.setToolTip(accessible_name)
+            button.setObjectName("modeButton")
+            button.setCheckable(True)
+            button.setMinimumHeight(34)
+            button.clicked.connect(lambda checked, mode=key: self.select_process_stage(mode))
+            self.cardado_group.addButton(button)
+            self.cardado_buttons[key] = button
+            cardado_row.addWidget(button, 1)
+        self.cardado_buttons["cardado"].setChecked(True)
+        self.sidebar_layout.addWidget(self.cardado_modes)
+
+        self.settings_button = QPushButton("Ajustes de detección")
+        self.settings_button.setCheckable(True)
+        self.inference_settings = QWidget()
+        settings_layout = QVBoxLayout(self.inference_settings)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_button.toggled.connect(self.inference_settings.setVisible)
+        self.inference_settings.hide()
+
+        self.model_info_label = QLabel()
         self.model_info_label.setWordWrap(True)
-        self.sidebar_layout.addWidget(self.model_info_label)
+        settings_layout.addWidget(self.model_info_label)
 
         # --- Parámetros graduables de inferencia (compartidos) ---
         self.standard_params = QWidget()
@@ -347,12 +372,6 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         conf_lbl = QLabel("Conf.")
         conf_lbl.setObjectName("mutedLabel")
 
-        self.btn_conf_minus = QPushButton("-")
-        self.btn_conf_minus.setObjectName("touchStepBtn")
-        self.btn_conf_minus.setFixedSize(30, 34)
-        self.btn_conf_minus.setCursor(Qt.PointingHandCursor)
-        self.btn_conf_minus.clicked.connect(lambda: self._step_conf(-0.05))
-
         self.spin_conf = QDoubleSpinBox()
         self.spin_conf.setRange(0.05, 0.95)
         self.spin_conf.setSingleStep(0.05)
@@ -361,12 +380,6 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.spin_conf.setMinimumHeight(34)
         self.spin_conf.setKeyboardTracking(False)
         self.spin_conf.valueChanged.connect(self._on_infer_params_changed)
-
-        self.btn_conf_plus = QPushButton("+")
-        self.btn_conf_plus.setObjectName("touchStepBtn")
-        self.btn_conf_plus.setFixedSize(30, 34)
-        self.btn_conf_plus.setCursor(Qt.PointingHandCursor)
-        self.btn_conf_plus.clicked.connect(lambda: self._step_conf(0.05))
 
         imgsz_lbl = QLabel("Imgsz")
         imgsz_lbl.setObjectName("mutedLabel")
@@ -378,12 +391,10 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.combo_imgsz.currentIndexChanged.connect(self._on_infer_params_changed)
 
         params_row.addWidget(conf_lbl)
-        params_row.addWidget(self.btn_conf_minus)
         params_row.addWidget(self.spin_conf, 1)
-        params_row.addWidget(self.btn_conf_plus)
         params_row.addWidget(imgsz_lbl)
         params_row.addWidget(self.combo_imgsz, 1)
-        self.sidebar_layout.addWidget(self.standard_params)
+        settings_layout.addWidget(self.standard_params)
 
         self.tiled_params = QWidget()
         tiled_form = QFormLayout(self.tiled_params)
@@ -393,7 +404,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         for spin in (self.spin_particle, self.spin_straw):
             spin.setRange(0.05, 0.95)
             spin.setSingleStep(0.05)
-            spin.setValue(0.10)
+            spin.setValue(0.25)
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self._on_infer_params_changed)
         tiled_form.addRow("Conf. partícula", self.spin_particle)
@@ -402,10 +413,9 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.tiled_view.addItems(["Cajas", "Auditoría"])
         self.tiled_view.currentIndexChanged.connect(self._on_infer_params_changed)
         tiled_form.addRow("Vista", self.tiled_view)
-        self.tiled_summary = QLabel("Tiles de 640 px · solape de 128 px")
+        self.tiled_summary = QLabel()
         self.tiled_summary.setWordWrap(True)
-        tiled_form.addRow(self.tiled_summary)
-        self.sidebar_layout.addWidget(self.tiled_params)
+        settings_layout.addWidget(self.tiled_params)
 
         # Botón principal de cámara en tiempo real
         self.detect_button = QPushButton("Iniciar detección")
@@ -434,41 +444,44 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.sidebar_layout.addLayout(test_img_row)
         # === FIN MÓDULO TEMPORAL DE PRUEBA CON IMÁGENES (UI) ===
 
-        self.sidebar_layout.addWidget(self._make_divider())
-
-        # Estado de la fibra
-        status_title = QLabel("Estado de la fibra")
-        status_title.setObjectName("sectionLabel")
-        self.sidebar_layout.addWidget(status_title)
-
         self.status_label = QLabel("ESPERANDO")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.sidebar_layout.addWidget(self.status_label)
 
-        # Nivel de impurezas
-        gauge_header = QHBoxLayout()
-        gauge_title = QLabel("Nivel de impurezas")
-        gauge_title.setObjectName("mutedLabel")
-        self.gauge_value_label = QLabel("0 / 60")
-        self.gauge_value_label.setObjectName("monoValue")
-        gauge_header.addWidget(gauge_title)
-        gauge_header.addStretch()
-        gauge_header.addWidget(self.gauge_value_label)
-        self.sidebar_layout.addLayout(gauge_header)
+        self.gauge = QProgressBar()
+        self.gauge.setRange(0, GAUGE_MAX)
+        self.gauge.setFixedHeight(24)
+        self.gauge.setAlignment(Qt.AlignCenter)
+        self.sidebar_layout.addWidget(self.gauge)
 
-        self.gauge_figure = Figure(figsize=(3.5, 0.5), dpi=100)
-        self.gauge_figure.patch.set_facecolor("#FFFFFF")
-        self.gauge_canvas = FigureCanvas(self.gauge_figure)
-        self.gauge_canvas.setFixedHeight(24)
-        self.sidebar_layout.addWidget(self.gauge_canvas)
+        self.impurity_legend = QWidget()
+        legend_row = QHBoxLayout(self.impurity_legend)
+        legend_row.setContentsMargins(0, 0, 0, 0)
+        legend_row.setSpacing(6)
+        self.legend_swatches = {}
+        for class_id, label in ((0, "Partícula"), (1, "Paja")):
+            swatch = QLabel()
+            swatch.setFixedSize(12, 12)
+            self.legend_swatches[class_id] = swatch
+            legend_row.addWidget(swatch)
+            legend_row.addWidget(QLabel(label))
+        legend_row.addStretch()
+        self._update_impurity_legend(audit=False)
+        self.sidebar_layout.addWidget(self.impurity_legend)
+        self.sidebar_layout.addWidget(self.tiled_summary)
 
-        self.sidebar_layout.addWidget(self._make_divider())
+        self.sidebar_layout.addWidget(self.settings_button)
+        self.sidebar_layout.addWidget(self.inference_settings)
 
-        # Control de motor Arduino/L298N
-        motor_title = QLabel("Control de motor")
-        motor_title.setObjectName("sectionLabel")
-        self.sidebar_layout.addWidget(motor_title)
+        self.motor_panel = QGroupBox()
+        motor_layout = QVBoxLayout(self.motor_panel)
+        self.motor_panel.hide()
+        motor_toggle = QPushButton("Control de motor")
+        motor_toggle.setCheckable(True)
+        motor_toggle.toggled.connect(self.motor_panel.setVisible)
+        self.sidebar_layout.addWidget(motor_toggle)
+        self.sidebar_layout.addWidget(self.motor_panel)
 
         port_row = QHBoxLayout()
         port_row.setSpacing(5)
@@ -483,11 +496,11 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         port_row.addWidget(self.motor_port_combo, 1)
         port_row.addWidget(self.motor_refresh_button)
         port_row.addWidget(self.motor_connect_button)
-        self.sidebar_layout.addLayout(port_row)
+        motor_layout.addLayout(port_row)
 
         self.motor_connection_label = QLabel("Arduino: desconectado")
         self.motor_connection_label.setObjectName("mutedLabel")
-        self.sidebar_layout.addWidget(self.motor_connection_label)
+        motor_layout.addWidget(self.motor_connection_label)
 
         run_row = QHBoxLayout()
         run_row.setSpacing(6)
@@ -501,7 +514,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.motor_stop_button.clicked.connect(self._motor_stop)
         run_row.addWidget(self.motor_start_button)
         run_row.addWidget(self.motor_stop_button)
-        self.sidebar_layout.addLayout(run_row)
+        motor_layout.addLayout(run_row)
 
         direction_row = QHBoxLayout()
         direction_row.setSpacing(6)
@@ -513,7 +526,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.motor_forward_button.clicked.connect(self._motor_forward)
         direction_row.addWidget(self.motor_reverse_button)
         direction_row.addWidget(self.motor_forward_button)
-        self.sidebar_layout.addLayout(direction_row)
+        motor_layout.addLayout(direction_row)
 
         speed_row = QHBoxLayout()
         speed_title = QLabel("Velocidad")
@@ -523,33 +536,32 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         speed_row.addWidget(speed_title)
         speed_row.addStretch()
         speed_row.addWidget(self.motor_speed_label)
-        self.sidebar_layout.addLayout(speed_row)
+        motor_layout.addLayout(speed_row)
 
         self.motor_speed_slider = QSlider(Qt.Horizontal)
         self.motor_speed_slider.setRange(0, 255)
         self.motor_speed_slider.setValue(90)
         self.motor_speed_slider.setMinimumHeight(32)
         self.motor_speed_slider.valueChanged.connect(self._motor_speed_changed)
-        self.sidebar_layout.addWidget(self.motor_speed_slider)
+        motor_layout.addWidget(self.motor_speed_slider)
 
         self.motor_response_label = QLabel("Respuesta Arduino: sin datos")
         self.motor_response_label.setObjectName("monoMuted")
         self.motor_response_label.setWordWrap(True)
-        self.sidebar_layout.addWidget(self.motor_response_label)
+        motor_layout.addWidget(self.motor_response_label)
 
         self._find_motor_ports()
 
-        self.sidebar_layout.addWidget(self._make_divider())
-
-        # Registro de eventos
-        log_title = QLabel("Registro de eventos")
-        log_title.setObjectName("sectionLabel")
-        self.sidebar_layout.addWidget(log_title)
-
-        self.log_area = QTextEdit()
+        log_toggle = QPushButton("Registro de eventos")
+        log_toggle.setCheckable(True)
+        self.sidebar_layout.addWidget(log_toggle)
+        self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMinimumHeight(95)
+        self.log_area.setMaximumBlockCount(300)
+        self.log_area.hide()
+        log_toggle.toggled.connect(self.log_area.setVisible)
         self.sidebar_layout.addWidget(self.log_area, 1)
+        self.sidebar_layout.addStretch()
 
         self.sidebar_scroll.setWidget(sidebar)
         self.main_splitter.addWidget(self.sidebar_scroll)
@@ -561,12 +573,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         main_layout.addWidget(self.title_bar)
         main_layout.addWidget(content_area, 1)
 
-        self.update_status_label(0)
-        self.update_gauge_chart(0)
-
-    def _step_conf(self, delta):
-        new_val = round(max(0.05, min(0.95, self.spin_conf.value() + delta)), 2)
-        self.spin_conf.setValue(new_val)
+        self._reset_inspection_status()
 
     def _on_splitter_moved(self, pos, index):
         if self._sidebar_visible:
@@ -590,14 +597,14 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self._layout_mode = mode
 
         if mode == "compact":
-            bar_h = 52
+            bar_h = 42
             logo_l_size = QSize(100, 32)
             logo_r_size = QSize(90, 32)
             title_px = 13
             margin = 8
             side_margin = 10
-            side_spacing = 8
-            sidebar_w = 285
+            side_spacing = 5
+            sidebar_w = 258
             log_min_h = 80
             toggle_size = QSize(42, 34)
             fs_size = QSize(36, 34)
@@ -667,21 +674,34 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             return cwd_path
         raise FileNotFoundError(f"No se encontró '{filename}' en '{MODELS_DIR}'.")
 
+    def _select_stage_button(self, stage_key):
+        if stage_key == "cardado" and self.cardado_buttons["cardado_impurezas"].isChecked():
+            stage_key = "cardado_impurezas"
+        self.select_process_stage(stage_key)
+
     def select_process_stage(self, stage_key, load_now=True):
-        """Selecciona la etapa (Escarmenado, Cardado o Hilado) y carga el modelo bajo demanda."""
         if stage_key not in PROCESS_MODELS:
             return
 
         self.current_stage_key = stage_key
-        for key, btn in self.stage_buttons.items():
-            btn.setChecked(key == stage_key)
+        if self.timer.isActive():
+            self.last_rendered_pixmap = None
+        cardado = stage_key in ("cardado", "cardado_impurezas")
+        self.stage_buttons["cardado" if cardado else stage_key].setChecked(True)
+        if cardado:
+            self.cardado_buttons[stage_key].setChecked(True)
+        self.cardado_modes.setVisible(cardado)
 
         cfg = PROCESS_MODELS[stage_key]
         tiled = cfg.get("tiled", False)
         self.standard_params.setVisible(not tiled)
         self.tiled_params.setVisible(tiled)
+        self.impurity_legend.setVisible(tiled)
+        self._update_impurity_legend(audit=self.tiled_view.currentIndex() == 1)
+        self.gauge.setVisible(stage_key != "cardado")
+        self._reset_inspection_status()
         self._reset_tiled_summary()
-        if not load_now:
+        if not load_now or (not self.timer.isActive() and self.test_image_bgr is None):
             self.model_info_label.setText(f"{cfg['filename']} · {cfg['desc']} (en espera)")
             return
 
@@ -697,6 +717,8 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         cfg = PROCESS_MODELS[stage_key]
         if self.model is not None and PROCESS_MODELS[self.loaded_model_key]["filename"] == cfg["filename"]:
             self.loaded_model_key = stage_key
+            override = os.environ.get("ALPACA_TILING_WEIGHTS") if cfg.get("tiled") else None
+            self.model_info_label.setText(f"{os.path.basename(override or cfg['filename'])} · {cfg['desc']}")
             return True
 
         if YOLO is None:
@@ -759,8 +781,16 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.infer_conf = float(self.spin_conf.value())
         self.infer_imgsz = int(self.combo_imgsz.currentData())
 
+        if not self.timer.isActive() and self.test_image_bgr is None:
+            self._update_impurity_legend(audit=self.tiled_view.currentIndex() == 1)
         if self.test_image_bgr is not None and not self.timer.isActive():
             self._run_test_image_inference()
+
+    def _update_impurity_legend(self, *, audit):
+        palette = AUDIT_COLORS if audit else BOX_COLORS
+        for class_id, swatch in self.legend_swatches.items():
+            blue, green, red = palette[class_id]
+            swatch.setStyleSheet(f"background-color: rgb({red}, {green}, {blue}); border: 1px solid #555;")
 
     def _active_stage_config(self):
         key = self.loaded_model_key or self.current_stage_key
@@ -791,7 +821,8 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             self.tiled_job = None
         self.tiled_timer.stop()
         self.last_tiled_detections = []
-        self.tiled_summary.setText("Tiles de 640 px · solape de 128 px")
+        self.tiled_summary.clear()
+        self.tiled_summary.hide()
 
     def _run_tiled_inference(self, frame):
         audit = self.tiled_view.currentIndex() == 1
@@ -801,10 +832,12 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             self.tiled_job[0].cancel()
         if not live or self.last_rendered_pixmap is None:
             self.tiled_summary.setText("Procesando tiles…")
+            self.tiled_summary.show()
             self._display_bgr_frame(frame)
         future = self.tiled_executor.submit(
             self.model.predict_frame, frame, conf_particle=self.spin_particle.value(),
             conf_straw=self.spin_straw.value(), dedup=mode,
+            skip_outer_rows=self._active_stage_config().get("skip_outer_rows", False),
         )
         self.tiled_job = (future, frame, audit, live)
         self.tiled_timer.start()
@@ -824,8 +857,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
                 self._stop_detection()
             else:
                 self._reset_tiled_summary()
-                self.update_status_label(0)
-                self.update_gauge_chart(0)
+                self._reset_inspection_status()
             QMessageBox.warning(self, "Error de inferencia", str(exc))
             return
         self.last_tiled_detections = detections
@@ -835,8 +867,10 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             f"{len(metrics['tiles'])} tiles · {metrics['total_ms']:.0f} ms\n"
             f"Partículas: {particles} · Paja: {count - particles}"
         )
+        self.tiled_summary.show()
         self.update_status_label(count)
         self.update_gauge_chart(count)
+        self._update_impurity_legend(audit=audit)
         self._display_bgr_frame(render_detections(frame, detections, metrics, audit=audit))
 
     def _run_inference_on_frame(self, frame):
@@ -958,8 +992,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
             self._run_inference_on_frame(self.test_image_bgr)
         except Exception as e:
             self._reset_tiled_summary()
-            self.update_status_label(0)
-            self.update_gauge_chart(0)
+            self._reset_inspection_status()
             self._display_bgr_frame(self.test_image_bgr)
             QMessageBox.warning(self, "Error de inferencia", str(e))
 
@@ -972,8 +1005,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         if not self.timer.isActive():
             self.video_label.setPixmap(QPixmap())
             self.video_label.setText("Inicie la detección para ver la cámara o cargue una imagen de prueba")
-            self.update_status_label(0)
-            self.update_gauge_chart(0)
+            self._reset_inspection_status()
         self._reset_tiled_summary()
         print("Imagen de prueba limpiada.")
     # === FIN MÓDULO TEMPORAL DE PRUEBA CON IMÁGENES ===
@@ -1049,28 +1081,6 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
                 background-color: #EFEFEF;
                 border-color: #B3B3B3;
             }
-            #touchStepBtn {
-                background-color: #F4F4F4;
-                border: 1px solid #C8C8C8;
-                border-radius: 4px;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 0px;
-            }
-            #touchStepBtn:pressed {
-                background-color: #DFDFDF;
-            }
-            #divider {
-                color: #E5E5E5;
-                background-color: #E5E5E5;
-                max-height: 1px;
-                border: none;
-            }
-            #sectionLabel {
-                font-size: 12px;
-                font-weight: 600;
-                color: #262626;
-            }
             #mutedLabel {
                 font-size: 11px;
                 color: #5E5E5E;
@@ -1086,23 +1096,13 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
                 font-size: 10px;
                 color: #666666;
             }
-            #stageBtn {
-                background-color: #FAFAFA;
-                border: 1px solid #CCCCCC;
-                border-radius: 3px;
-                padding: 6px 4px;
-                font-size: 11px;
-                font-weight: 500;
-                color: #262626;
+            #modeButton {
+                padding: 2px 4px;
             }
-            #stageBtn:hover {
-                background-color: #EFEFEF;
-            }
-            #stageBtn:checked {
+            #modeButton:checked {
                 background-color: #262626;
                 color: #FFFFFF;
-                border: 1px solid #1A1A1A;
-                font-weight: 600;
+                border-color: #262626;
             }
             #detectButton {
                 background-color: #262626;
@@ -1203,7 +1203,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
                 margin: -8px 0;
                 border-radius: 12px;
             }
-            QTextEdit {
+            QPlainTextEdit {
                 background-color: #F7F7F7;
                 border: 1px solid #D9D9D9;
                 border-radius: 3px;
@@ -1221,7 +1221,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
 
     def log(self, message):
         """Añade un mensaje al área de texto y hace scroll automático al final."""
-        self.log_area.append(str(message))
+        self.log_area.appendPlainText(str(message))
         self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
 
     # ------------------------------------------------------------------
@@ -1237,6 +1237,7 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         self.last_rendered_pixmap = None
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("Detección detenida.")
+        self._reset_inspection_status()
         self._reset_tiled_summary()
 
     def start_detection(self):
@@ -1281,50 +1282,38 @@ class MainWindow(QMainWindow, ColorCalibration, MotorControls):
         Actualiza la etiqueta de estado basándose en umbrales de conteo de impurezas.
         Utiliza propiedades dinámicas de Qt para cambiar el estilo (colores).
         """
-        if count < 5:
+        if count < CLEAN_LIMIT:
             status = "clean"
             text = "FIBRA LIMPIA"
-        elif count <= 20:
+        elif count <= DIRTY_LIMIT:
             status = "warning"
             text = "FIBRA CON IMPUREZAS"
         else:
             status = "danger"
             text = "FIBRA SUCIA"
 
+        if self.current_stage_key == "cardado":
+            text, status = f"CINTAS: {count}", "idle"
+        self._set_status(text, status)
+
+    def _reset_inspection_status(self):
+        self._set_status("ESPERANDO", "idle")
+        self.update_gauge_chart(0)
+
+    def _set_status(self, text, status):
         self.status_label.setText(text)
         self.status_label.setProperty("status", status)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
     def update_gauge_chart(self, count):
-        """Renderiza una barra horizontal limpia y sobria para el nivel de impurezas."""
-        max_count = 60
-        clamped_count = max(0, min(count, max_count))
-        count_norm = clamped_count / max_count
-
-        if hasattr(self, "gauge_value_label"):
-            self.gauge_value_label.setText(f"{count} / {max_count}")
-
-        self.gauge_figure.clear()
-        ax = self.gauge_figure.add_subplot(111)
-        ax.set_facecolor("#FFFFFF")
-
-        cmap = mcolors.LinearSegmentedColormap.from_list("grad", ["#3A7D54", "#C28522", "#B03A38"])
-        bar_color = cmap(count_norm)
-
-        ax.barh([0], [max_count], color="#EAEAEA", height=0.62, edgecolor="#D4D4D4", linewidth=0.7)
-        if clamped_count > 0:
-            ax.barh([0], [clamped_count], color=bar_color, height=0.62, edgecolor="none")
-
-        ax.set_xlim(0, max_count)
-        ax.set_ylim(-0.55, 0.55)
-        ax.set_yticks([])
-        ax.set_xticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-        self.gauge_figure.subplots_adjust(left=0.0, right=1.0, top=0.92, bottom=0.08)
-        self.gauge_canvas.draw()
+        self.gauge.setValue(min(count, GAUGE_MAX))
+        self.gauge.setFormat(f"{count} / {GAUGE_MAX}")
+        color = "#3A7D54" if count < CLEAN_LIMIT else "#B67923" if count <= DIRTY_LIMIT else "#B03A38"
+        self.gauge.setStyleSheet(
+            "QProgressBar { border: 1px solid #CCC; background: #F4F4F4; color: #181818; }"
+            f"QProgressBar::chunk {{ background: {color}; }}"
+        )
 
     def update_frame(self):
         """Ciclo principal: Captura frame -> Inferencia YOLO -> Actualización UI."""
