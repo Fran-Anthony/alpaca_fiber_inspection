@@ -18,10 +18,19 @@ Controles:
 - s: guardar una captura PNG
 """
 
+import os
 import time
+from ctypes import c_char_p, c_int
 import cv2
 import numpy as np
-import mvsdk
+from .paths import RUNTIME_DIR
+
+try:
+    import mvsdk
+except ModuleNotFoundError as exc:
+    if exc.name != "mvsdk":
+        raise
+    from . import mvsdk
 
 CAMERA_INDEX = 0
 EXPOSURE_MS = 8.33
@@ -53,6 +62,16 @@ class MindVisionCamera:
         return True
 
     def _open(self):
+        set_data_directory = getattr(getattr(mvsdk, "_sdk", None), "CameraSetDataDirectory", None)
+        if set_data_directory is not None:
+            data_dir = RUNTIME_DIR / "Camera"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            set_data_directory.argtypes = [c_char_p]
+            set_data_directory.restype = c_int
+            status = set_data_directory(os.fsencode(data_dir))
+            if status != 0:
+                raise mvsdk.CameraException(status)
+
         print("Buscando cámaras MindVision...")
 
         devices = mvsdk.CameraEnumerateDevice()
@@ -342,6 +361,8 @@ def main():
                     "mindvision_capture_%Y%m%d_%H%M%S.png"
                 )
 
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                filename = str(RUNTIME_DIR / filename)
                 if cv2.imwrite(filename, frame):
                     print(f"Captura guardada: {filename}")
                 else:

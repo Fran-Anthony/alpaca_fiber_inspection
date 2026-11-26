@@ -17,13 +17,7 @@ from pathlib import Path
 from PIL import Image
 
 
-def positions(length, size, overlap):
-    if length < size:
-        raise ValueError(f'Dimensión {length} menor que tile {size}; no se rellena ni escala.')
-    result = list(range(0, length - size + 1, size - overlap))
-    if result[-1] != length - size:
-        result.append(length - size)
-    return result
+from alpaca_inspection.tiling_geometry import positions
 
 
 def sha256(path):

@@ -7,22 +7,19 @@ Aplicación de escritorio en Python (**PyQt5 + OpenCV + Ultralytics YOLO + Matpl
 ## Características principales
 
 ### 1. Soporte multi-etapa con carga de modelos bajo demanda
-El sistema permite alternar entre las tres etapas del proceso transformativo de la fibra sin cargar todos los pesos en memoria al inicio:
+| Etapa | Pesos | Visualización |
+| :--- | :--- | :--- |
+| Escarmenado y Lavado | `bestS.pt` (`yolo11n_exp2_aug`) | Cajas de impurezas con tiling |
+| Cardado | `bestC.pt` | Máscaras y cajas |
+| Hilado | `bestH.pt` | Máscaras y cajas |
 
-| Etapa | Archivo de pesos | Tipo de tarea | Visualización |  |
-| :--- | :--- | :--- | :--- | :--- |
-| **Escarmenado** | `bestE.pt` | Detección | Bounding boxes + etiquetas 
-| **Cardado** | `bestC.pt` | Detección | Bounding boxes + etiquetas |  |
-| **Hilado** | `bestH.pt` | Segmentación | Máscara  + contorno + bounding box + etiquetas |  |
+La aplicación carga el modelo al usar cada etapa. Escarmenado y Lavado comparten la misma instancia.
 
-- Al cambiar de etapa, el modelo anterior se libera de memoria (`del`, `gc.collect()` y `torch.cuda.empty_cache()` si hay GPU CUDA) antes de cargar el nuevo.
-- Es posible cambiar de etapa incluso con la cámara en funcionamiento.
+### 2. Parámetros de inferencia
 
-### 2. Parámetros de inferencia graduables (compartidos)
-- **Confianza (`conf`)**: ajustable entre `0.05` y `0.95` (paso de `0.05`, valor inicial `0.50`).
-- **Tamaño de entrada (`imgsz`)**: seleccionable entre `320`, `416`, `512`, `640`, `800`, `960`, `1024`, `1280` y `1600` (valor inicial `416`).
-  - Valores más bajos priorizan velocidad (FPS) en tiempo real.
-  - Valores más altos conservan más detalle fino para impurezas pequeñas o máscaras de segmentación en fotos de alta resolución.
+- **Escarmenado y Lavado** usan recortes RAW de 640 × 640 px, con 128 px de solape nominal. Un fotograma de 2448 × 2048 genera 20 tiles. Ambos umbrales empiezan en `0.10` y se pueden ajustar por clase. **Cajas** muestra partícula en rojo y paja en azul. **Auditoría** muestra la cuadrícula, las confianzas y las fusiones.
+- **Cardado e Hilado** usan la imagen completa con controles de confianza y tamaño de entrada.
+- Para usar otro checkpoint compatible o un motor TensorRT de 640 × 640, define `ALPACA_TILING_WEIGHTS` con la ruta del archivo.
 
 ### 3. Diagnóstico de calidad y registro de eventos (OJO)
 - **Semáforo de estado de la fibra**:
@@ -44,34 +41,38 @@ El sistema permite alternar entre las tres etapas del proceso transformativo de 
 
 ## Estructura de la carpeta
 
-Coloca todos los archivos en la misma carpeta del proyecto:
-
 ```text
 proyecto/
-├── main_usb_camera.py   # Aplicación principal
-├── mindvision_video.py  # Captura MindVision mediante MVSDK
-├── requirements.txt     # Dependencias de Python
-├── README.md            # Documentación
-├── bestE.pt             # Pesos YOLO - Escarmenado (detección)
-├── bestC.pt             # Pesos YOLO - Cardado (detección)
-├── bestH.pt             # Pesos YOLO - Hilado (segmentación)
-├── logo_left.png        # Opcional - Logo institucional izquierdo
-└── logo_right.png       # Opcional - Logo institucional derecho
+├── main_usb_camera.py     # Inicio de la aplicación Qt
+├── infer_tiling.py        # Inicio de la CLI
+├── alpaca_inspection/     # Interfaz, cámara, motor, calibración e inferencia
+├── models/               # Pesos YOLO de todas las etapas y bestE.pt de referencia
+├── assets/               # Logos de la interfaz
+├── reference/
+│   ├── camera/           # Aplicaciones anteriores y pruebas de MindVision
+│   └── tiling/           # Agents_tiling.md y herramientas de dataset Roboflow
+├── runtime/              # Datos de cámara y calibración locales, ignorados por Git
+└── requirements.txt
 ```
 
+Ejecuta las herramientas de dataset como módulos desde la raíz. Por ejemplo:
 
+```bash
+.venv/bin/python -m reference.tiling.tiling_fibra_roboflow --help
+.venv/bin/python -m reference.tiling.untiling_fibra_roboflow --help
+.venv/bin/python -m reference.tiling.visualizar_untiling_coco --help
+```
 
-
----
+Las utilidades históricas de cámara permanecen en `reference/camera/`. Para ejecutarlas en este equipo, incluye `alpaca_inspection/` en `PYTHONPATH` para que encuentren el módulo del SDK.
 
 ## Instalación y ejecución
 
 ### Cámara MindVision en el Jetson
 
 La aplicación usa MVSDK de forma predeterminada. El SDK nativo (`libMVSDK.so` en Linux)
-debe estar instalado y su módulo Python `mvsdk.py` debe estar disponible en la carpeta
-del proyecto o en `PYTHONPATH`. En este equipo, el enlace de la carpeta del proyecto
-apunta al módulo usado por la aplicación anterior.
+debe estar instalado y su módulo Python `mvsdk.py` debe estar disponible en
+`PYTHONPATH` o en `alpaca_inspection/mvsdk.py`. En este equipo el enlace apunta
+al módulo usado por la aplicación anterior.
 
 Ejecuta la aplicación con el entorno virtual configurado en el Jetson:
 
@@ -110,17 +111,26 @@ python main_usb_camera.py
 
 ## Guía rápida de uso
 
-1. **Seleccionar etapa del proceso**: haz clic en **Escarmenado**, **Cardado** o **Hilado** en el panel derecho. El modelo correspondiente (`bestE.pt`, `bestC.pt` o `bestH.pt`) se cargará automáticamente.
-2. **Ajustar parámetros**: modifica **Confianza** e **Imgsz** según la sensibilidad y resolución deseadas.
+1. **Seleccionar etapa del proceso**: elige **Escarmenado**, **Lavado**, **Cardado** o **Hilado** en el panel derecho.
+2. **Ajustar parámetros**: ajusta los umbrales de confianza y los controles disponibles para la etapa.
 3. **Inspección en tiempo real**:
    - Pulsa **Iniciar detección** para abrir la cámara USB y comenzar la inferencia.
    - Pulsa **Detener detección** para liberar la cámara.
 4. **Prueba con imágenes (sin cámara)**:
    - Pulsa **Probar imagen...** y elige un archivo (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`).
-   - Cambia de etapa o ajusta `Confianza` / `Imgsz` para ver la actualización inmediata.
+   - Cambia de etapa o ajusta sus controles para recalcular la predicción. Para las etapas con tiling, la imagen debe medir al menos 640 px de ancho y alto.
    - Pulsa **Limpiar** para vaciar el visor.
 5. **Control de motor (Arduino / L298N)**:
    - Pulsa **Buscar** para listar los puertos disponibles y luego **Conectar**.
    - Usa **Iniciar motor**, **Detener motor**, **Adelante**, **Reversa** y el control deslizante de **Velocidad (PWM)**.
 
 ---
+
+## Inferencia por tiling desde la terminal
+
+```bash
+.venv/bin/python infer_tiling.py --images /ruta/a/imagen.png --output resultados --save-vis
+.venv/bin/python infer_tiling.py --stream mindvision
+```
+
+`--images` también admite una carpeta plana o una carpeta con sesiones `S-*/images/FLA_*.png`. Genera `predicciones.coco.json` y `resumen.csv` en una carpeta nueva. `--save-vis` añade las vistas de cajas y auditoría. `--stream` admite archivos de video, índices de cámara OpenCV y URL RTSP. Para ver los parámetros de ROI, lote y fusión, ejecuta `infer_tiling.py --help` con el mismo entorno.
